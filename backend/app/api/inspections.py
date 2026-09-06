@@ -23,7 +23,12 @@ def get_history(
     query = db.query(models.Inspection).order_by(desc(models.Inspection.created_at))
     
     if status:
-        query = query.filter(models.Inspection.overall_result == status)
+        if status in ("NON-COMPLIANT", "NON_COMPLIANT"):
+            query = query.filter(models.Inspection.overall_result.in_(["NON-COMPLIANT", "NON_COMPLIANT"]))
+        elif status in ("NOT_VERIFIABLE", "NEEDS_REVIEW", "NOT-VERIFIABLE", "NEEDS-REVIEW"):
+            query = query.filter(models.Inspection.overall_result.in_(["NOT_VERIFIABLE", "NEEDS_REVIEW"]))
+        else:
+            query = query.filter(models.Inspection.overall_result == status)
     if category:
         query = query.filter(models.Inspection.category == category)
         
@@ -52,8 +57,8 @@ def get_dashboard(db: Session = Depends(get_db)):
     """Get statistics for the dashboard."""
     total = db.query(models.Inspection).count()
     compliant = db.query(models.Inspection).filter(models.Inspection.overall_result == "COMPLIANT").count()
-    non_compliant = db.query(models.Inspection).filter(models.Inspection.overall_result == "NON-COMPLIANT").count()
-    not_verifiable = db.query(models.Inspection).filter(models.Inspection.overall_result == "NOT_VERIFIABLE").count()
+    non_compliant = db.query(models.Inspection).filter(models.Inspection.overall_result.in_(["NON-COMPLIANT", "NON_COMPLIANT"])).count()
+    not_verifiable = db.query(models.Inspection).filter(models.Inspection.overall_result.in_(["NOT_VERIFIABLE", "NEEDS_REVIEW"])).count()
     
     food = db.query(models.Inspection).filter(models.Inspection.category == "FOOD").count()
     cosmetic = db.query(models.Inspection).filter(models.Inspection.category == "COSMETIC").count()
@@ -103,7 +108,26 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
     product = {c.name: getattr(inspection.product, c.name) for c in inspection.product.__table__.columns} if inspection.product else None
     ocr_result = {c.name: getattr(inspection.ocr_result, c.name) for c in inspection.ocr_result.__table__.columns} if inspection.ocr_result else None
     extracted_fields = [{c.name: getattr(f, c.name) for c in f.__table__.columns} for f in inspection.extracted_fields]
-    rule_results = [{c.name: getattr(r, c.name) for c in r.__table__.columns} for r in inspection.rule_results]
+    rule_results = []
+    for r in inspection.rule_results:
+        item = {c.name: getattr(r, c.name) for c in r.__table__.columns}
+        ed = item.get("evidence_data") or {}
+        if "binary" in ed and ed["binary"] is not None:
+            item["binary"] = ed["binary"]
+        else:
+            if item.get("status") == "PASS":
+                item["binary"] = 1
+            elif item.get("status") == "FAIL":
+                item["binary"] = 0
+            else:
+                item["binary"] = None
+        item["reason"] = ed.get("reason") or item.get("message")
+        if "validation_method" in ed:
+            item["validation_method"] = ed["validation_method"]
+        for field in ["value", "unit", "quantity_present", "unit_present", "quantity_unit_valid", "raw_value", "validation_result"]:
+            if field in ed and ed[field] is not None:
+                item[field] = ed[field]
+        rule_results.append(item)
     images = [
         {
             "id": image.id,
@@ -226,13 +250,24 @@ def add_manual_input(input_data: schemas.ManualInputRequest, db: Session = Depen
     db.query(models.RuleResult).filter(models.RuleResult.inspection_id == inspection.id).delete()
     
     for res in rule_results:
+        ev_data = dict(res.get("evidence_data") or {})
+        ev_data["binary"] = res.get("binary")
+        ev_data["reason"] = res.get("reason") or res.get("message")
+        ev_data["validation_result"] = res.get("validation_result")
+        ev_data["raw_value"] = res.get("raw_value")
+        ev_data["value"] = res.get("value")
+        ev_data["unit"] = res.get("unit")
+        ev_data["quantity_present"] = res.get("quantity_present")
+        ev_data["unit_present"] = res.get("unit_present")
+        ev_data["quantity_unit_valid"] = res.get("quantity_unit_valid")
+
         db.add(models.RuleResult(
             inspection_id=inspection.id,
             rule_id=res.get("rule_id"),
             parameter=res.get("parameter"),
             status=res.get("status"),
             message=res.get("message"),
-            evidence_data=res.get("evidence_data"),
+            evidence_data=ev_data,
             rule_version=res.get("rule_version"),
             regulatory_source=res.get("regulatory_source"),
             rule_reference=res.get("rule_reference"),
