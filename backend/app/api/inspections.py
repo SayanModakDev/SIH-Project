@@ -10,6 +10,8 @@ from app.reports.pdf_report import generate_inspection_pdf
 from app.rules.rule_engine import evaluate_rules, build_inspection_findings
 from app.rules.applicability import get_applicable_rules
 
+from app.core.constants import InspectionStatus, normalize_status
+
 router = APIRouter()
 
 @router.get("/history", response_model=List[schemas.InspectionSummary])
@@ -24,10 +26,15 @@ def get_history(
     query = db.query(models.Inspection).order_by(desc(models.Inspection.created_at))
     
     if status:
-        if status in ("NON-COMPLIANT", "NON_COMPLIANT"):
-            query = query.filter(models.Inspection.overall_result.in_(["NON-COMPLIANT", "NON_COMPLIANT"]))
-        elif status in ("NOT_VERIFIABLE", "NEEDS_REVIEW", "NOT-VERIFIABLE", "NEEDS-REVIEW"):
-            query = query.filter(models.Inspection.overall_result.in_(["NOT_VERIFIABLE", "NEEDS_REVIEW"]))
+        norm = normalize_status(status)
+        if norm == InspectionStatus.NON_COMPLIANT:
+            query = query.filter(models.Inspection.overall_result.in_(["NON_COMPLIANT", "NON-COMPLIANT"]))
+        elif norm == InspectionStatus.NOT_VERIFIABLE:
+            query = query.filter(models.Inspection.overall_result.in_(["NOT_VERIFIABLE", "NEEDS_REVIEW", "NOT-VERIFIABLE", "NEEDS-REVIEW"]))
+        elif norm == InspectionStatus.COMPLIANT:
+            query = query.filter(models.Inspection.overall_result == "COMPLIANT")
+        elif norm == InspectionStatus.NOT_APPLICABLE:
+            query = query.filter(models.Inspection.overall_result.in_(["NOT_APPLICABLE", "NOT-APPLICABLE"]))
         else:
             query = query.filter(models.Inspection.overall_result == status)
     if category:
@@ -41,7 +48,9 @@ def get_history(
             inspection_date=i.created_at,
             product_name=i.product_name,
             category=i.category,
-            overall_result=i.overall_result,
+            package_type=i.package_type or "RETAIL",
+            import_status=i.import_status or "DOMESTIC",
+            overall_result=str(normalize_status(i.overall_result) or i.overall_result or ""),
             priority=i.priority,
             inspector_name=i.inspector_name,
             created_at=i.created_at,
@@ -55,11 +64,12 @@ def get_history(
 
 @router.get("/dashboard", response_model=schemas.DashboardStats)
 def get_dashboard(db: Session = Depends(get_db)):
-    """Get statistics for the dashboard."""
+    """Get statistics for the dashboard using canonical states."""
     total = db.query(models.Inspection).count()
     compliant = db.query(models.Inspection).filter(models.Inspection.overall_result == "COMPLIANT").count()
-    non_compliant = db.query(models.Inspection).filter(models.Inspection.overall_result.in_(["NON-COMPLIANT", "NON_COMPLIANT"])).count()
-    not_verifiable = db.query(models.Inspection).filter(models.Inspection.overall_result.in_(["NOT_VERIFIABLE", "NEEDS_REVIEW"])).count()
+    non_compliant = db.query(models.Inspection).filter(models.Inspection.overall_result.in_(["NON_COMPLIANT", "NON-COMPLIANT"])).count()
+    not_verifiable = db.query(models.Inspection).filter(models.Inspection.overall_result.in_(["NOT_VERIFIABLE", "NEEDS_REVIEW", "NOT-VERIFIABLE", "NEEDS-REVIEW"])).count()
+    not_applicable = db.query(models.Inspection).filter(models.Inspection.overall_result.in_(["NOT_APPLICABLE", "NOT-APPLICABLE"])).count()
     
     food = db.query(models.Inspection).filter(models.Inspection.category == "FOOD").count()
     cosmetic = db.query(models.Inspection).filter(models.Inspection.category == "COSMETIC").count()
@@ -81,7 +91,9 @@ def get_dashboard(db: Session = Depends(get_db)):
             "id": i.id,
             "product_name": i.product_name,
             "category": i.category,
-            "result": i.overall_result,
+            "package_type": i.package_type or "RETAIL",
+            "import_status": i.import_status or "DOMESTIC",
+            "result": str(normalize_status(i.overall_result) or i.overall_result or ""),
             "date": i.created_at.isoformat() if i.created_at else None
         } for i in recent
     ]
@@ -91,6 +103,7 @@ def get_dashboard(db: Session = Depends(get_db)):
         compliant=compliant,
         non_compliant=non_compliant,
         not_verifiable=not_verifiable,
+        not_applicable=not_applicable,
         food_inspections=food,
         cosmetic_inspections=cosmetic,
         recent_inspections=recent_inspections,
@@ -156,7 +169,7 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
         "package_type": inspection.package_type,
         "import_status": inspection.import_status,
         "quantity_type": inspection.quantity_type,
-        "overall_result": inspection.overall_result,
+        "overall_result": str(normalize_status(inspection.overall_result) or inspection.overall_result or ""),
         "priority": inspection.priority,
         "image_path": f"/uploads/{inspection.image_path}" if inspection.image_path else None,
         "inspector_name": inspection.inspector_name,
