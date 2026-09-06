@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
-from typing import List, Optional
+from typing import List, Optional, Any
 from app.database.connection import get_db
 from app.database import models, schemas
 from app.reports.pdf_report import generate_inspection_pdf
@@ -40,19 +40,19 @@ def get_history(
     if category:
         query = query.filter(models.Inspection.category == category)
         
-    inspections = query.offset(skip).limit(limit).all()
+    inspections: List[Any] = query.offset(skip).limit(limit).all()
     
     return [
         schemas.InspectionSummary(
-            id=i.id,
+            id=int(i.id),
             inspection_date=i.created_at,
-            product_name=i.product_name,
-            category=i.category,
-            package_type=i.package_type or "RETAIL",
-            import_status=i.import_status or "DOMESTIC",
-            overall_result=str(normalize_status(i.overall_result) or i.overall_result or ""),
-            priority=i.priority,
-            inspector_name=i.inspector_name,
+            product_name=str(i.product_name) if i.product_name is not None else None,
+            category=str(i.category) if i.category is not None else None,
+            package_type=str(i.package_type) if i.package_type is not None else "RETAIL",
+            import_status=str(i.import_status) if i.import_status is not None else "DOMESTIC",
+            overall_result=str(normalize_status(str(i.overall_result)) if i.overall_result is not None else None),
+            priority=str(i.priority or "MEDIUM"),
+            inspector_name=str(i.inspector_name) if i.inspector_name is not None else None,
             created_at=i.created_at,
             report=(
                 {"id": i.report.id, "file_name": i.report.file_name}
@@ -74,7 +74,7 @@ def get_dashboard(db: Session = Depends(get_db)):
     food = db.query(models.Inspection).filter(models.Inspection.category == "FOOD").count()
     cosmetic = db.query(models.Inspection).filter(models.Inspection.category == "COSMETIC").count()
     
-    recent = db.query(models.Inspection).order_by(desc(models.Inspection.created_at)).limit(5).all()
+    recent: List[Any] = db.query(models.Inspection).order_by(desc(models.Inspection.created_at)).limit(5).all()
     
     # Common failed parameters
     failed_rules = db.query(
@@ -93,7 +93,7 @@ def get_dashboard(db: Session = Depends(get_db)):
             "category": i.category,
             "package_type": i.package_type or "RETAIL",
             "import_status": i.import_status or "DOMESTIC",
-            "result": str(normalize_status(i.overall_result) or i.overall_result or ""),
+            "result": str(normalize_status(str(i.overall_result) if i.overall_result is not None else None) or i.overall_result or ""),
             "date": i.created_at.isoformat() if i.created_at else None
         } for i in recent
     ]
@@ -114,7 +114,7 @@ def get_dashboard(db: Session = Depends(get_db)):
 @router.get("/inspection/{inspection_id}")
 def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
     """Get full details of a specific inspection."""
-    inspection = db.query(models.Inspection).filter(models.Inspection.id == inspection_id).first()
+    inspection: Any = db.query(models.Inspection).filter(models.Inspection.id == inspection_id).first()
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found")
         
@@ -169,7 +169,7 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
         "package_type": inspection.package_type,
         "import_status": inspection.import_status,
         "quantity_type": inspection.quantity_type,
-        "overall_result": str(normalize_status(inspection.overall_result) or inspection.overall_result or ""),
+        "overall_result": str(normalize_status(str(inspection.overall_result) if inspection.overall_result is not None else None) or inspection.overall_result or ""),
         "priority": inspection.priority,
         "image_path": f"/uploads/{inspection.image_path}" if inspection.image_path else None,
         "inspector_name": inspection.inspector_name,
@@ -189,11 +189,11 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
 @router.post("/manual-input", response_model=schemas.MessageResponse)
 def add_manual_input(input_data: schemas.ManualInputRequest, db: Session = Depends(get_db)):
     """Add manual measurement data and re-evaluate rules."""
-    inspection = db.query(models.Inspection).filter(models.Inspection.id == input_data.inspection_id).first()
+    inspection: Any = db.query(models.Inspection).filter(models.Inspection.id == input_data.inspection_id).first()
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found")
         
-    product = inspection.product
+    product: Any = inspection.product
     if product:
         product.actual_measured_weight = input_data.actual_measured_weight
         product.actual_weight_unit = input_data.actual_weight_unit
@@ -201,13 +201,14 @@ def add_manual_input(input_data: schemas.ManualInputRequest, db: Session = Depen
         product.measurement_timestamp = func.now()
         
     if input_data.inspector_notes:
-        inspection.notes = (inspection.notes or "") + "\n" + input_data.inspector_notes
+        existing_notes = str(inspection.notes) if inspection.notes is not None else ""
+        inspection.notes = (existing_notes + "\n" + str(input_data.inspector_notes)).strip()
 
     for field_name, raw_value in input_data.field_overrides.items():
-        value = str(raw_value or '').strip()
+        value = (raw_value or '').strip()
         if not value:
             continue
-        field = next((item for item in inspection.extracted_fields if item.field_name == field_name), None)
+        field: Any = next((item for item in inspection.extracted_fields if item.field_name == field_name), None)
         if field:
             # Preserve the previous OCR value as evidence before applying the
             # inspector's correction.
@@ -247,10 +248,10 @@ def add_manual_input(input_data: schemas.ManualInputRequest, db: Session = Depen
     has_physical = input_data.actual_measured_weight is not None
     applicable_rules = get_applicable_rules(
         all_rules=all_rules_dict,
-        category=inspection.category,
-        product_type=inspection.product_type or "UNKNOWN",
-        package_type=inspection.package_type,
-        import_status=inspection.import_status,
+        category=str(inspection.category or "UNKNOWN"),
+        product_type=str(inspection.product_type or "UNKNOWN"),
+        package_type=str(inspection.package_type or "RETAIL"),
+        import_status=str(inspection.import_status or "DOMESTIC"),
         has_physical_data=has_physical
     )
     
@@ -258,7 +259,7 @@ def add_manual_input(input_data: schemas.ManualInputRequest, db: Session = Depen
     rule_results, overall_result = evaluate_rules(applicable_rules, extracted_fields)
     
     # Update inspection
-    inspection.overall_result = overall_result
+    inspection.overall_result = str(overall_result)
     
     # Update rule results in DB - simple approach: delete old, insert new
     db.query(models.RuleResult).filter(models.RuleResult.inspection_id == inspection.id).delete()
@@ -299,7 +300,7 @@ def add_manual_input(input_data: schemas.ManualInputRequest, db: Session = Depen
 @router.post("/report/{inspection_id}", response_model=schemas.MessageResponse)
 def generate_report(inspection_id: int, db: Session = Depends(get_db)):
     """Generate a PDF report for the inspection."""
-    inspection = db.query(models.Inspection).filter(models.Inspection.id == inspection_id).first()
+    inspection: Any = db.query(models.Inspection).filter(models.Inspection.id == inspection_id).first()
     if not inspection:
         raise HTTPException(status_code=404, detail="Inspection not found")
         
@@ -316,7 +317,7 @@ def generate_report(inspection_id: int, db: Session = Depends(get_db)):
 @router.get("/report/{inspection_id}/download")
 def download_report(inspection_id: int, db: Session = Depends(get_db)):
     """Download the generated PDF report."""
-    inspection = db.query(models.Inspection).filter(models.Inspection.id == inspection_id).first()
+    inspection: Any = db.query(models.Inspection).filter(models.Inspection.id == inspection_id).first()
     if not inspection or not inspection.report:
         raise HTTPException(status_code=404, detail="Report not found")
         
