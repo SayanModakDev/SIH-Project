@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
+from datetime import timezone
 from typing import List, Optional, Any
 from app.database.connection import get_db
 from app.database import models, schemas
@@ -42,24 +43,30 @@ def get_history(
         
     inspections: List[Any] = query.offset(skip).limit(limit).all()
     
-    return [
-        schemas.InspectionSummary(
-            id=int(i.id),
-            inspection_date=i.created_at,
-            product_name=str(i.product_name) if i.product_name is not None else None,
-            category=str(i.category) if i.category is not None else None,
-            package_type=str(i.package_type) if i.package_type is not None else "RETAIL",
-            import_status=str(i.import_status) if i.import_status is not None else "DOMESTIC",
-            overall_result=str(normalize_status(str(i.overall_result)) if i.overall_result is not None else None),
-            priority=str(i.priority or "MEDIUM"),
-            inspector_name=str(i.inspector_name) if i.inspector_name is not None else None,
-            created_at=i.created_at,
-            report=(
-                {"id": i.report.id, "file_name": i.report.file_name}
-                if i.report else None
-            ),
-        ) for i in inspections
-    ]
+    result_summaries = []
+    for i in inspections:
+        created_dt = i.created_at
+        if created_dt and created_dt.tzinfo is None:
+            created_dt = created_dt.replace(tzinfo=timezone.utc)
+        result_summaries.append(
+            schemas.InspectionSummary(
+                id=int(i.id),
+                inspection_date=created_dt,
+                product_name=str(i.product_name) if i.product_name is not None else None,
+                category=str(i.category) if i.category is not None else None,
+                package_type=str(i.package_type) if i.package_type is not None else "RETAIL",
+                import_status=str(i.import_status) if i.import_status is not None else "DOMESTIC",
+                overall_result=str(normalize_status(str(i.overall_result)) if i.overall_result is not None else None),
+                priority=str(i.priority or "MEDIUM"),
+                inspector_name=str(i.inspector_name) if i.inspector_name is not None else None,
+                created_at=created_dt,
+                report=(
+                    {"id": i.report.id, "file_name": i.report.file_name}
+                    if i.report else None
+                ),
+            )
+        )
+    return result_summaries
 
 
 @router.get("/dashboard", response_model=schemas.DashboardStats)
@@ -86,17 +93,20 @@ def get_dashboard(db: Session = Depends(get_db)):
      
     common_failed = [{"parameter": r[0], "count": r[1]} for r in failed_rules]
     
-    recent_inspections = [
-        {
+    recent_inspections = []
+    for i in recent:
+        created_dt = i.created_at
+        if created_dt and created_dt.tzinfo is None:
+            created_dt = created_dt.replace(tzinfo=timezone.utc)
+        recent_inspections.append({
             "id": i.id,
             "product_name": i.product_name,
             "category": i.category,
             "package_type": i.package_type or "RETAIL",
             "import_status": i.import_status or "DOMESTIC",
             "result": str(normalize_status(str(i.overall_result) if i.overall_result is not None else None) or i.overall_result or ""),
-            "date": i.created_at.isoformat() if i.created_at else None
-        } for i in recent
-    ]
+            "date": created_dt.isoformat() if created_dt else None
+        })
 
     return schemas.DashboardStats(
         total_inspections=total,
@@ -156,11 +166,15 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
     evidence = [{c.name: getattr(e, c.name) for c in e.__table__.columns} for e in inspection.evidence_items]
     report = {c.name: getattr(inspection.report, c.name) for c in inspection.report.__table__.columns} if inspection.report else None
     
+    created_dt = inspection.created_at
+    if created_dt and created_dt.tzinfo is None:
+        created_dt = created_dt.replace(tzinfo=timezone.utc)
+
     # Build complete dict since response_model requires handling nested objects correctly.
     # Alternatively return a dict that matches the schema
     return {
         "id": inspection.id,
-        "inspection_date": inspection.created_at,
+        "inspection_date": created_dt,
         "product_name": inspection.product_name,
         "brand": inspection.brand,
         "product_type": inspection.product_type,
@@ -174,7 +188,7 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
         "image_path": f"/uploads/{inspection.image_path}" if inspection.image_path else None,
         "inspector_name": inspection.inspector_name,
         "notes": inspection.notes,
-        "created_at": inspection.created_at,
+        "created_at": created_dt,
         "product": product,
         "images": images,
         "ocr_result": ocr_result,
