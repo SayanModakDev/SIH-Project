@@ -8,7 +8,7 @@ from typing import List, Optional, Any
 from app.database.connection import get_db
 from app.database import models, schemas
 from app.reports.pdf_report import generate_inspection_pdf
-from app.rules.rule_engine import evaluate_rules, build_inspection_findings, calculate_rule_summary
+from app.rules.rule_engine import evaluate_rules, build_inspection_findings, calculate_rule_summary, derive_overall_result
 from app.rules.applicability import get_applicable_rules
 
 from app.core.constants import InspectionStatus, normalize_status
@@ -165,6 +165,7 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
         deduped_results.append(r_item)
     rule_results = deduped_results
     rule_summary = calculate_rule_summary(rule_results)
+    derived_overall = derive_overall_result(rule_results)
 
     images = [
         {
@@ -197,7 +198,7 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
         "package_type": inspection.package_type,
         "import_status": inspection.import_status,
         "quantity_type": inspection.quantity_type,
-        "overall_result": str(normalize_status(str(inspection.overall_result) if inspection.overall_result is not None else None) or inspection.overall_result or ""),
+        "overall_result": str(normalize_status(derived_overall) or normalize_status(str(inspection.overall_result) if inspection.overall_result is not None else None) or inspection.overall_result or ""),
         "priority": inspection.priority,
         "image_path": f"/uploads/{inspection.image_path}" if inspection.image_path else None,
         "inspector_name": inspection.inspector_name,
