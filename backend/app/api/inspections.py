@@ -8,7 +8,7 @@ from typing import List, Optional, Any
 from app.database.connection import get_db
 from app.database import models, schemas
 from app.reports.pdf_report import generate_inspection_pdf
-from app.rules.rule_engine import evaluate_rules, build_inspection_findings
+from app.rules.rule_engine import evaluate_rules, build_inspection_findings, calculate_rule_summary
 from app.rules.applicability import get_applicable_rules
 
 from app.core.constants import InspectionStatus, normalize_status
@@ -152,6 +152,20 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
             if field in ed and ed[field] is not None:
                 item[field] = ed[field]
         rule_results.append(item)
+
+    # Deduplicate rule results by rule_id preserving order
+    seen_rule_ids = set()
+    deduped_results = []
+    for r_item in rule_results:
+        rid = r_item.get("rule_id")
+        if rid and rid in seen_rule_ids:
+            continue
+        if rid:
+            seen_rule_ids.add(rid)
+        deduped_results.append(r_item)
+    rule_results = deduped_results
+    rule_summary = calculate_rule_summary(rule_results)
+
     images = [
         {
             "id": image.id,
@@ -194,6 +208,7 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
         "ocr_result": ocr_result,
         "extracted_fields": extracted_fields,
         "rule_results": rule_results,
+        "summary": rule_summary,
         "evidence": evidence,
         "report": report,
         "findings": build_inspection_findings(rule_results)
