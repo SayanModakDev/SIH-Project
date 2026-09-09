@@ -316,6 +316,9 @@ def add_manual_input(input_data: schemas.ManualInputRequest, db: Session = Depen
             rule_version=res.get("rule_version"),
             regulatory_source=res.get("regulatory_source"),
             rule_reference=res.get("rule_reference"),
+            rule_reference_status=res.get("rule_reference_status"),
+            citation=res.get("citation"),
+            verification_status=res.get("verification_status"),
             review_required=res.get("review_required")
         ))
 
