@@ -184,6 +184,9 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
     created_dt = inspection.created_at
     if created_dt and created_dt.tzinfo is None:
         created_dt = created_dt.replace(tzinfo=timezone.utc)
+    inspect_str = created_dt.strftime("%Y-%m-%d") if created_dt else datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    reg_snapshot = getattr(inspection, "regulatory_snapshot", None) or "LMPC_2011_CURRENT_2024 | FSSAI_LD_2020_CURRENT_2024"
+    reg_snapshot_label = f"Effective for inspection date: {inspect_str}"
 
     # Build complete dict since response_model requires handling nested objects correctly.
     # Alternatively return a dict that matches the schema
@@ -203,6 +206,8 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
         "image_path": f"/uploads/{inspection.image_path}" if inspection.image_path else None,
         "inspector_name": inspection.inspector_name,
         "notes": inspection.notes,
+        "regulatory_snapshot": reg_snapshot,
+        "regulatory_snapshot_label": reg_snapshot_label,
         "created_at": created_dt,
         "product": product,
         "images": images,
@@ -276,14 +281,21 @@ def add_manual_input(input_data: schemas.ManualInputRequest, db: Session = Depen
     all_rules_dict = [{c.name: getattr(r, c.name) for c in r.__table__.columns} for r in db_rules]
     
     has_physical = input_data.actual_measured_weight is not None
+    inspect_dt = inspection.created_at.strftime('%Y-%m-%d') if inspection.created_at else None
     applicable_rules = get_applicable_rules(
         all_rules=all_rules_dict,
         category=str(inspection.category or "UNKNOWN"),
         product_type=str(inspection.product_type or "UNKNOWN"),
         package_type=str(inspection.package_type or "RETAIL"),
         import_status=str(inspection.import_status or "DOMESTIC"),
-        has_physical_data=has_physical
+        has_physical_data=has_physical,
+        inspection_date=inspect_dt,
     )
+
+    if not getattr(inspection, 'regulatory_snapshot', None):
+        from app.rules.status_safety import derive_dynamic_regulatory_snapshot
+        snapshot_meta = derive_dynamic_regulatory_snapshot(applicable_rules, inspect_dt)
+        inspection.regulatory_snapshot = snapshot_meta['snapshot_id']
     
     # 4. Evaluate
     rule_results, overall_result = evaluate_rules(applicable_rules, extracted_fields)
