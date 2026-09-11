@@ -12,8 +12,20 @@ from app.rules.rule_engine import evaluate_rules, build_inspection_findings, cal
 from app.rules.applicability import get_applicable_rules
 
 from app.core.constants import InspectionStatus, normalize_status
+from app.core.config import get_settings
 
 router = APIRouter()
+settings = get_settings()
+
+
+def format_public_url(path: Optional[str]) -> Optional[str]:
+    """Prefix path with PUBLIC_BASE_URL if configured, otherwise return relative path."""
+    if not path or path.startswith("http://") or path.startswith("https://"):
+        return path
+    base = settings.PUBLIC_BASE_URL.strip().rstrip("/") if settings.PUBLIC_BASE_URL else ""
+    clean_path = path if path.startswith("/") else f"/{path}"
+    return f"{base}{clean_path}" if base else clean_path
+
 
 @router.get("/history", response_model=List[schemas.InspectionSummary])
 def get_history(
@@ -172,7 +184,7 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
             "id": image.id,
             "image_index": image.image_index,
             "file_name": image.file_name,
-            "image_path": f"/uploads/{image.file_name}",
+            "image_path": format_public_url(f"/uploads/{image.file_name}"),
             "processed_file_name": image.processed_file_name,
             "source": image.source,
         }
@@ -180,6 +192,8 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
     ]
     evidence = [{c.name: getattr(e, c.name) for c in e.__table__.columns} for e in inspection.evidence_items]
     report = {c.name: getattr(inspection.report, c.name) for c in inspection.report.__table__.columns} if inspection.report else None
+    if report and report.get("file_name"):
+        report["file_url"] = format_public_url(f"/api/report/{inspection.id}/download")
     
     created_dt = inspection.created_at
     if created_dt and created_dt.tzinfo is None:
@@ -203,7 +217,7 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
         "quantity_type": inspection.quantity_type,
         "overall_result": str(normalize_status(derived_overall) or normalize_status(str(inspection.overall_result) if inspection.overall_result is not None else None) or inspection.overall_result or ""),
         "priority": inspection.priority,
-        "image_path": f"/uploads/{inspection.image_path}" if inspection.image_path else None,
+        "image_path": format_public_url(f"/uploads/{inspection.image_path}") if inspection.image_path else None,
         "inspector_name": inspection.inspector_name,
         "notes": inspection.notes,
         "regulatory_snapshot": reg_snapshot,
@@ -353,7 +367,7 @@ def generate_report(inspection_id: int, db: Session = Depends(get_db)):
         report = generate_inspection_pdf(inspection, db)
         return schemas.MessageResponse(
             message="Report generated successfully",
-            data={"report_id": report.id, "file_url": f"/api/report/{inspection_id}/download"}
+            data={"report_id": report.id, "file_url": format_public_url(f"/api/report/{inspection_id}/download")}
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
