@@ -306,6 +306,35 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
             "rule_reference": rr.get("rule_reference"),
         })
 
+    # -----------------------------------------------------------------------
+    # Product Familiarity / Reference Product Registry
+    # -----------------------------------------------------------------------
+    registry_match = None
+    ocr_payload_data = ocr_result.get("ocr_data") if ocr_result else {}
+    if isinstance(ocr_payload_data, dict):
+        registry_match = ocr_payload_data.get("registry_match")
+
+    if not registry_match:
+        from app.registry.matcher import match_product
+        barcode_val = None
+        if isinstance(ocr_payload_data, dict):
+            b_res = ocr_payload_data.get("barcode_result") or {}
+            barcode_val = b_res.get("value")
+        ef_dict = {f.get("field_name"): f.get("field_value") for f in extracted_fields if f.get("field_name")}
+        reg_result = match_product(
+            barcode=barcode_val or ef_dict.get("BARCODE"),
+            brand=ef_dict.get("BRAND") or (product.get("brand") if product else None),
+            generic_name=ef_dict.get("GENERIC_NAME") or (product.get("generic_name") if product else None),
+            product_name=ef_dict.get("PRODUCT_NAME") or (product.get("product_name") if product else None),
+            quantity=ef_dict.get("DECLARED_NET_QUANTITY") or (
+                f"{product.get('declared_net_quantity_value')} {product.get('declared_net_quantity_unit')}"
+                if product and product.get("declared_net_quantity_value")
+                else None
+            ),
+            category=inspection.category,
+        )
+        registry_match = reg_result.to_dict()
+
     # Build complete dict since response_model requires handling nested objects correctly.
     # Alternatively return a dict that matches the schema
     return {
@@ -337,6 +366,7 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
         "report": report,
         "findings": build_inspection_findings(rule_results),
         "review_items": review_items,
+        "registry_match": registry_match,
     }
 
 
