@@ -202,6 +202,110 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
     reg_snapshot = getattr(inspection, "regulatory_snapshot", None) or "LMPC_2011_CURRENT_2024 | FSSAI_LD_2020_CURRENT_2024"
     reg_snapshot_label = f"Effective for inspection date: {inspect_str}"
 
+    # -----------------------------------------------------------------------
+    # Enrich extracted_fields with candidate / evidence data from rule_results
+    # so the frontend Inspector Review panel can display actual candidates
+    # without fabrication. No DB schema change needed — rule_results already
+    # carry evidence_data.candidates / competing_evidence from the validators.
+    # -----------------------------------------------------------------------
+    rule_evidence_by_param: dict = {}
+    for rr in rule_results:
+        param = rr.get("parameter")
+        if param and param not in rule_evidence_by_param:
+            rule_evidence_by_param[param] = rr
+
+    for ef in extracted_fields:
+        param = ef.get("field_name")
+        rr = rule_evidence_by_param.get(param)
+        if rr:
+            ed = rr.get("evidence_data") or {}
+            # Expose candidates array (real OCR candidates, never fabricated)
+            candidates = (
+                ed.get("candidates")
+                or rr.get("competing_evidence")
+                or ed.get("competing_candidates")
+                or ed.get("values")
+            )
+            if candidates:
+                ef["candidates"] = candidates
+            # Expose evidence_state for user-facing review language
+            ev_state = rr.get("evidence_state") or ed.get("evidence_state")
+            if ev_state:
+                ef["evidence_state"] = ev_state
+            # Expose candidate_classification
+            cc = rr.get("candidate_classification") or ed.get("candidate_classification")
+            if cc:
+                ef["candidate_classification"] = cc
+            # has_conflict flag
+            if ed.get("has_conflict") is not None:
+                ef["has_conflict"] = ed["has_conflict"]
+            # rule status for quick lookup
+            ef["rule_status"] = rr.get("status")
+            ef["rule_reason"] = rr.get("reason") or rr.get("message")
+            ef["rule_id"] = rr.get("rule_id")
+
+    # Build review_items — structured list for the Inspector Review tab
+    # Excludes physical-verification-only parameters that cannot be resolved
+    # from image evidence alone.
+    PHYSICAL_ONLY_PARAMS = frozenset({
+        "ACTUAL_NET_CONTENT",
+        "FONT_SIZE_COMPLIANCE",
+        "PHYSICAL_NET_CONTENT",
+        "NET_CONTENT_MEASUREMENT",
+    })
+
+    review_statuses = frozenset({"NOT_VERIFIABLE", "REVIEW", "NEEDS_REVIEW", "MANUAL_CHECK"})
+
+    # Build a fast lookup from extracted_fields by field_name
+    ef_by_name: dict = {}
+    for ef in extracted_fields:
+        fname = ef.get("field_name")
+        if fname:
+            ef_by_name[fname] = ef
+
+    review_items = []
+    for rr in rule_results:
+        status = rr.get("status")
+        param = rr.get("parameter", "")
+        if status not in review_statuses:
+            continue
+        if param in PHYSICAL_ONLY_PARAMS:
+            continue
+
+        ed = rr.get("evidence_data") or {}
+        ev_state = rr.get("evidence_state") or ed.get("evidence_state") or ""
+
+        # Also skip if evidence_state is PHYSICAL_VERIFICATION_REQUIRED and
+        # no candidates are present (truly physical-only scenario)
+        candidates_raw = (
+            ed.get("candidates")
+            or rr.get("competing_evidence")
+            or ed.get("competing_candidates")
+            or ed.get("values")
+        )
+        if ev_state == "PHYSICAL_VERIFICATION_REQUIRED" and not candidates_raw:
+            continue
+
+        # Pull the corresponding extracted field record if present
+        ef_record = ef_by_name.get(param, {})
+
+        review_items.append({
+            "parameter": param,
+            "rule_id": rr.get("rule_id"),
+            "status": status,
+            "evidence_state": ev_state,
+            "reason": rr.get("reason") or rr.get("message") or "",
+            "extracted_value": ef_record.get("field_value") or ed.get("value") or rr.get("raw_value"),
+            "confidence": ef_record.get("confidence") or ed.get("confidence"),
+            "source": ef_record.get("source") or ed.get("source"),
+            "source_image_index": ef_record.get("source_image_id"),
+            "candidates": candidates_raw or [],
+            "candidate_classification": rr.get("candidate_classification") or ed.get("candidate_classification"),
+            "has_conflict": ed.get("has_conflict", False),
+            "regulatory_source": rr.get("regulatory_source"),
+            "rule_reference": rr.get("rule_reference"),
+        })
+
     # Build complete dict since response_model requires handling nested objects correctly.
     # Alternatively return a dict that matches the schema
     return {
@@ -231,8 +335,10 @@ def get_inspection_detail(inspection_id: int, db: Session = Depends(get_db)):
         "summary": rule_summary,
         "evidence": evidence,
         "report": report,
-        "findings": build_inspection_findings(rule_results)
+        "findings": build_inspection_findings(rule_results),
+        "review_items": review_items,
     }
+
 
 
 @router.post("/manual-input", response_model=schemas.MessageResponse)
