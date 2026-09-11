@@ -467,6 +467,8 @@ def add_manual_input(input_data: schemas.ManualInputRequest, db: Session = Depen
         ev_data["quantity_present"] = res.get("quantity_present")
         ev_data["unit_present"] = res.get("unit_present")
         ev_data["quantity_unit_valid"] = res.get("quantity_unit_valid")
+        ev_data["verification_type"] = res.get("verification_type")
+        ev_data["evidence_state"] = res.get("evidence_state")
 
         db.add(models.RuleResult(
             inspection_id=inspection.id,
